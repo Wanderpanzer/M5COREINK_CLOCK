@@ -12,7 +12,7 @@
 #include <string>
 
 //#include "efontEnableJa.h"        // 日本語     368kB
-#include "efontEnableJaMini.h" //なぜかflashに収まらなくなったのでmini版に変更したがいけるか？
+#include "efontEnableJaMini.h" //なぜかflashROMに収まらなくなったのでmini版に変更したがこれでもよさそう？
 #include "efont.h"                // この前にfont範囲を書く
 #include "efontM5StackCoreInk.h"  // https://github.com/tanakamasayuki/efont
 
@@ -45,6 +45,10 @@ String a[] = {"" , "" , "" , ""};
 String stelop = "";
 String fdate = "";
 
+//ADC
+static esp_adc_cal_characteristics_t adc_chars;
+const int ADC_PIN = 35;
+
 void drawImageToSprite(int posX,int posY,image_t* imagePtr,Ink_Sprite* sprite)
 {
     sprite->drawBuff(   posX, posY,
@@ -64,8 +68,8 @@ void darwDate( RTC_DateTypeDef *date)
 {
     int posX = 10;
     char c0[10], c1[10], c2[10] , c3[10];
-    itoa(RTCDate.Month / 10 % 10 ,c0 ,10);
-    itoa(RTCDate.Month % 10 ,c1 ,10);   
+    // itoa(RTCDate.Month / 10 % 10 ,c0 ,10);
+    // itoa(RTCDate.Month % 10 ,c1 ,10);   
     itoa(RTCDate.Date / 10 % 10 ,c2 ,10);
     itoa(RTCDate.Date % 10 ,c3 ,10);
     /*
@@ -82,20 +86,29 @@ void darwDate( RTC_DateTypeDef *date)
     {printEfont(&TimePageSprite, "0" ,posX,0,2);posX += 16;}
     printEfont(&TimePageSprite, c3 ,posX,0,2);posX += 16;    
     printEfont(&TimePageSprite, "日" ,posX,0,2);posX += 40;
-    printEfont(&TimePageSprite, wd[RTCDate.WeekDay] ,posX,0,2);posX += 40;  
+    printEfont(&TimePageSprite, wd[RTCDate.WeekDay] ,posX,0,2);posX += 44;  
 
-    itoa((int)(getBatVoltage()*1000) ,c0 ,10);//
+    //itoa((int)(getBatVoltage()*1000) ,c0 ,10);//
+    int centiV = (int)roundf(getBatVoltage() * 100.0f); // 0.01V 単位で四捨五入して整数化 // 例: 3.70V -> 370     
+    int whole = centiV / 100; // 整数部と小数部を分離して "X.YY" 形式にする
+    int frac = abs(centiV % 100);     
+    snprintf(c0, sizeof(c0), "%d.%02d", whole, frac); // 安全にフォーマットして c0 に格納 
     printEfont(&TimePageSprite, c0 ,posX,0,2);//posX += 17; //  
 }
 
+/*ADCの設定はここにまとめて、setup()から一度だけ呼び出す */
+void setupADC() 
+{ 
+    analogSetPinAttenuation(ADC_PIN, ADC_11db);
+    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 3600, &adc_chars); 
+}
 float getBatVoltage()
 {
-    analogSetPinAttenuation(35,ADC_11db);
-    esp_adc_cal_characteristics_t *adc_chars = (esp_adc_cal_characteristics_t *)calloc(1, sizeof(esp_adc_cal_characteristics_t));
-    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 3600, adc_chars);
-    uint16_t ADCValue = analogRead(35);
-    
-    uint32_t BatVolmV  = esp_adc_cal_raw_to_voltage(ADCValue,adc_chars);
+    //analogSetPinAttenuation(35,ADC_11db); //setupADC()にまとめる
+    //esp_adc_cal_characteristics_t *adc_chars=(esp_adc_cal_characteristics_t *)calloc(1, sizeof(esp_adc_cal_characteristics_t));//何度もcallocするとメモリリークのおそれがあるのでstaticなグローバル変数の方がましか？
+    //esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 3600, adc_chars); //setupADC()にまとめる
+    uint16_t ADCValue = analogRead(ADC_PIN);    
+    uint32_t BatVolmV = esp_adc_cal_raw_to_voltage(ADCValue, &adc_chars);
     float BatVol = float(BatVolmV) * 25.1 / 5.1 / 1000;
     return BatVol;
 }
@@ -140,7 +153,7 @@ bool loadBool(String key) {
     return keyvalue;
 }
 
-/*メインLoopからこれが呼び出される*/
+/*メインloop()からこれが呼び出される*/
 void flushTimePage()
 {
     while(1)
@@ -148,15 +161,17 @@ void flushTimePage()
         M5.rtc.GetTime(&RTCtime);
         if( minutes != RTCtime.Minutes )
         {
+            //
             if(RTCtime.Minutes % 9 == 0)
             {
-                TimePageSprite.clear();//
-                TimePageSprite.pushSprite();//
-                delay(10);//
+                TimePageSprite.clear();
+                TimePageSprite.pushSprite();
+                delay(10);
                 checkBatteryVoltage(true); 
-                //TimePageSprite.pushSprite();//
-                //delay(1);//
+                //TimePageSprite.pushSprite();
+                //delay(1);
             }
+            //
 
             M5.rtc.GetTime(&RTCtime);
             M5.rtc.GetDate(&RTCDate);
@@ -182,6 +197,7 @@ void flushTimePage()
             }
             Serial.println ("ShutDown");
             M5.shutdown(48); //original 58 -> 53
+
             //it only is reached when the USB is connected
             Serial.println ("USB Power");
             delay(45*1000);  // original 55 ->50
@@ -204,7 +220,7 @@ void flushTimePage()
     TimePageSprite.clear( CLEAR_DRAWBUFF | CLEAR_LASTBUFF );
     PopPageSprite.clear( CLEAR_DRAWBUFF | CLEAR_LASTBUFF );
     
-    wifiInit();//
+    // wifiInit();//
     getweather();//
     PopPageSprite.pushSprite();//
     drawpop();//
@@ -215,7 +231,7 @@ void checkBatteryVoltage( bool powerDownFlag )
 {
     float batVol = getBatVoltage();
     Serial.printf("Bat Voltage %.2f\r\n",batVol);
-    if( batVol > 3.25 ) return;
+    if( batVol >= 3.29 ) return;
 
     drawWarning("Battery voltage is low");
     if( powerDownFlag == true )
@@ -224,8 +240,9 @@ void checkBatteryVoltage( bool powerDownFlag )
     }
     while( 1 )
     {
+        delay(10);
         batVol = getBatVoltage();
-        if( batVol > 3.25 ) return;
+        if( batVol > 3.29 ) return;
     }
 }
 
@@ -429,8 +446,11 @@ void setup()
     
     pinMode(LED_EXT_PIN, OUTPUT);
     digitalWrite(LED_EXT_PIN, HIGH);
+
+    setupADC();//
+
     M5.begin();
-        delay(100);
+    delay(100);
 
     if ( !M5.M5Ink.isInit()) {
       Serial.printf("Ink Init faild");
@@ -472,8 +492,8 @@ void setup()
     PopPageSprite.creatSprite(0,100,200,100);
     drawTimePage(); 
     if (flag == 1){
-    wifiInit();
-    getweather();
+    // wifiInit();
+    // getweather();
     drawpop();
     setCpuFrequencyMhz(10);
     }
